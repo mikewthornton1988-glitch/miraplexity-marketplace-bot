@@ -1,185 +1,114 @@
 import os
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackContext
-from supabase import create_client, Client
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# ------------------------------
-# ENVIRONMENT VARIABLES (Render)
-# ------------------------------
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+# in-memory tables
+tournaments = {
+    "4": {"players": [], "buyin": 10, "payouts": [30], "max": 4},   # $40 in, $30 out, $10 profit
+    "8": {"players": [], "buyin": 20, "payouts": [100, 40], "max": 8},  # $160 in, $140 out, $20 profit
+}
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+profit_total = 0
 
-# ------------------------------
-# BASIC COMMAND: /start
-# ------------------------------
-async def start(update: Update, context: CallbackContext):
-    user = update.effective_user
+def uname(update: Update):
+    u = update.effective_user
+    return u.username or f"{u.first_name}_{u.id}"
 
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        f"Welcome to Miraplexity Marketplace, {user.first_name}!\n\n"
-        "Available commands:\n"
-        "/shop - View store items\n"
-        "/buy <ItemName> - Purchase items\n"
-        "/inventory - View your items\n"
-        "/join - Enter the Cyber Pool Cup tournament\n"
+        "🎱 Miraplexity Pool Tournaments\n\n"
+        "Commands:\n"
+        "/join4 - Join 4-player $10 table\n"
+        "/join8 - Join 8-player $20 table\n"
+        "/paid - Confirm payment\n"
+        "/winner <username> - Set winner\n"
+        "/winner2 <username> - Set 2nd place (8-player only)\n"
+        "/tables - Show tables\n"
+        "/profit - Show today's profit"
     )
 
-# ------------------------------
-# SHOP: /shop
-# ------------------------------
-async def shop(update: Update, context: CallbackContext):
-    items = supabase.table("marketplace").select("*").execute()
+async def join4(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = uname(update)
+    t = tournaments["4"]
+    if user in t["players"]:
+        return await update.message.reply_text("You're already in the 4-player table.")
+    if len(t["players"]) >= t["max"]:
+        return await update.message.reply_text("4-player table is full.")
+    t["players"].append(user)
+    await update.message.reply_text(f"@{user} joined the 4-player table ({len(t['players'])}/4).\nSend $10 to Cash App and type /paid")
 
-    if not items.data:
-        await update.message.reply_text("Shop is empty.")
-        return
+async def join8(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = uname(update)
+    t = tournaments["8"]
+    if user in t["players"]:
+        return await update.message.reply_text("You're already in the 8-player table.")
+    if len(t["players"]) >= t["max"]:
+        return await update.message.reply_text("8-player table is full.")
+    t["players"].append(user)
+    await update.message.reply_text(f"@{user} joined the 8-player table ({len(t['players'])}/8).\nSend $20 to Cash App and type /paid")
 
-    msg = "🏪 *Miraplexity Marketplace*\n\n"
-    for item in items.data:
-        msg += (
-            f"• *{item['name']}*\n"
-            f"  Rarity: {item['rarity']}\n"
-            f"  Effect: {item['effect']}\n"
-            f"  Price: {item['price']}\n\n"
-        )
-
-    await update.message.reply_text(msg, parse_mode="Markdown")
-
-# ------------------------------
-# BUY: /buy ItemName
-# ------------------------------
-async def buy(update: Update, context: CallbackContext):
-    if len(context.args) == 0:
-        await update.message.reply_text("Usage: /buy ItemName")
-        return
-
-    item_name = " ".join(context.args)
-    user_id = str(update.effective_user.id)
-
-    # Fetch item from marketplace
-    item = supabase.table("marketplace").select("*").eq("name", item_name).execute()
-    if not item.data:
-        await update.message.reply_text("Item not found.")
-        return
-
-    # Fetch player wallet
-    profile = supabase.table("players").select("*").eq("username", user_id).execute()
-
-    if not profile.data:
-        # Create profile if doesn't exist
-        supabase.table("players").insert({
-            "username": user_id,
-            "wallet": 9999,
-            "tournament_id": "00000000-0000-0000-0000-000000000000"
-        }).execute()
-        profile = supabase.table("players").select("*").eq("username", user_id).execute()
-
-    wallet = profile.data[0]["wallet"]
-    price = item.data[0]["price"]
-
-    if wallet < price:
-        await update.message.reply_text("Not enough money.")
-        return
-
-    # Deduct cost
-    supabase.table("players").update({
-        "wallet": wallet - price
-    }).eq("username", user_id).execute()
-
-    # Add item to inventory
-    supabase.table("inventory").insert({
-        "player_id": profile.data[0]["id"],
-        "item_id": item.data[0]["id"],
-        "quantity": 1
-    }).execute()
-
-    await update.message.reply_text(f"You bought *{item_name}*!", parse_mode="Markdown")
-
-# ------------------------------
-# INVENTORY: /inventory
-# ------------------------------
-async def inventory(update: Update, context: CallbackContext):
-    user_id = str(update.effective_user.id)
-
-    profile = supabase.table("players").select("*").eq("username", user_id).execute()
-    if not profile.data:
-        await update.message.reply_text("You have no items yet.")
-        return
-
-    player_id = profile.data[0]["id"]
-
-    inv = supabase.table("inventory")\
-        .select("*, marketplace(name, rarity)")\
-        .eq("player_id", player_id)\
-        .execute()
-
-    if not inv.data:
-        await update.message.reply_text("Your inventory is empty.")
-        return
-
-    msg = "🎒 *Your Inventory*\n\n"
-    for entry in inv.data:
-        msg += f"• {entry['marketplace']['name']} ({entry['marketplace']['rarity']})\n"
-
-    await update.message.reply_text(msg, parse_mode="Markdown")
-
-# ------------------------------
-# JOIN TOURNAMENT: /join
-# ------------------------------
-async def join(update: Update, context: CallbackContext):
-    user_id = str(update.effective_user.id)
-
-    tournaments = supabase.table("tournaments").select("*").execute()
-
-    if not tournaments.data:
-        # Create default tournament
-        supabase.table("tournaments").insert({
-            "name": "Cyber Pool Cup",
-            "entry_fee": 10,
-            "status": "open",
-            "prize_pool": 0
-        }).execute()
-        tournaments = supabase.table("tournaments").select("*").execute()
-
-    t = tournaments.data[0]
-
-    supabase.table("players").insert({
-        "username": user_id,
-        "wallet": 500,
-        "tournament_id": t["id"]
-    }).execute()
-
+async def paid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = uname(update)
     await update.message.reply_text(
-        f"You joined *{t['name']}*!",
-        parse_mode="Markdown"
+        f"💵 @{user} marked as PAID.\nHost will verify on Cash App."
     )
 
-# ------------------------------
-# RUN BOT
-# ------------------------------
+async def winner(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global profit_total
+    if not context.args:
+        return await update.message.reply_text("Use: /winner <username>")
+    winner_name = context.args[0].lstrip("@")
+    for size, t in tournaments.items():
+        if winner_name in t["players"]:
+            total_in = len(t["players"]) * t["buyin"]
+            payout = t["payouts"][0]
+            house_profit = total_in - payout
+            profit_total += house_profit
+            await update.message.reply_text(
+                f"🏆 Winner: @{winner_name}\n"
+                f"Payout: ${payout}\n"
+                f"House profit: ${house_profit}"
+            )
+            t["players"].clear()
+            return
+    await update.message.reply_text("That user is not in any table.")
+
+async def winner2(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        return await update.message.reply_text("Use: /winner2 <username>")
+    winner_name = context.args[0].lstrip("@")
+    t = tournaments["8"]
+    if winner_name not in t["players"]:
+        return await update.message.reply_text("That user is not on the 8-player table.")
+    await update.message.reply_text(
+        f"🥈 Second place: @{winner_name}\n"
+        f"Payout: ${t['payouts'][1]}"
+    )
+
+async def tables(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = "🎱 Current Tables:"
+    for size, t in tournaments.items():
+        msg += f"\n\n{size}-PLAYER ({len(t['players'])}/{t['max']}):\n"
+        if t["players"]:
+            for p in t["players"]:
+                msg += f" • @{p}\n"
+        else:
+            msg += " (empty)\n"
+    await update.message.reply_text(msg)
+
+async def profit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"💰 Total house profit: ${profit_total}")
+
 if __name__ == "__main__":
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    # Tournament Commands
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    app = ApplicationBuilder().token(token).build()
+    app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("join4", join4))
     app.add_handler(CommandHandler("join8", join8))
     app.add_handler(CommandHandler("paid", paid))
-    app.add_handler(CommandHandler("verify", verify))
-    app.add_handler(CommandHandler("lock", lock))
     app.add_handler(CommandHandler("winner", winner))
     app.add_handler(CommandHandler("winner2", winner2))
-    app.add_handler(CommandHandler("tables", show_tables))
-    app.add_handler(CommandHandler("profit", profit_cmd))
-
-    # Marketplace Commands
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("shop", shop))
-    app.add_handler(CommandHandler("buy", buy))
-    app.add_handler(CommandHandler("inventory", inventory))
-    app.add_handler(CommandHandler("join", join))
-
-    print("Miraplexity Marketplace Bot is running...")
+    app.add_handler(CommandHandler("tables", tables))
+    app.add_handler(CommandHandler("profit", profit))
+    print("Miraplexity Tournament Bot LIVE")
     app.run_polling()
