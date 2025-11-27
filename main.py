@@ -163,6 +163,18 @@ async def join(update: Update, context: CallbackContext):
 if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    # Tournament Commands
+    app.add_handler(CommandHandler("join4", join4))
+    app.add_handler(CommandHandler("join8", join8))
+    app.add_handler(CommandHandler("paid", paid))
+    app.add_handler(CommandHandler("verify", verify))
+    app.add_handler(CommandHandler("lock", lock))
+    app.add_handler(CommandHandler("winner", winner))
+    app.add_handler(CommandHandler("winner2", winner2))
+    app.add_handler(CommandHandler("tables", show_tables))
+    app.add_handler(CommandHandler("profit", profit_cmd))
+
+    # Marketplace Commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("shop", shop))
     app.add_handler(CommandHandler("buy", buy))
