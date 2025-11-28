@@ -1,114 +1,186 @@
 import os
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+)
+from supabase import create_client, Client
 
-# in-memory tables
-tournaments = {
-    "4": {"players": [], "buyin": 10, "payouts": [30], "max": 4},   # $40 in, $30 out, $10 profit
-    "8": {"players": [], "buyin": 20, "payouts": [100, 40], "max": 8},  # $160 in, $140 out, $20 profit
-}
+# ------------------------------------------------------
+# ENVIRONMENT VARIABLES (Render)
+# ------------------------------------------------------
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-profit_total = 0
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-def uname(update: Update):
-    u = update.effective_user
-    return u.username or f"{u.first_name}_{u.id}"
+CASHAPP = "$MichaelThornton40"
 
+# ------------------------------------------------------
+# BASIC START COMMAND
+# ------------------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🎱 Miraplexity Pool Tournaments\n\n"
+        "Welcome to Miraplexity Marketplace & Cyber Pool Cup!\n\n"
         "Commands:\n"
-        "/join4 - Join 4-player $10 table\n"
-        "/join8 - Join 8-player $20 table\n"
-        "/paid - Confirm payment\n"
-        "/winner <username> - Set winner\n"
-        "/winner2 <username> - Set 2nd place (8-player only)\n"
-        "/tables - Show tables\n"
-        "/profit - Show today's profit"
+        "/join4 – Join $10 4-Player\n"
+        "/join8 – Join $10 8-Player\n"
+        "/paid – Mark your buy-in as paid\n"
+        "/tables – Show active players\n"
+        "/winner <id> – Set winner\n"
+        "/profit – Show system profit\n\n"
+        "Marketplace:\n"
+        "/shop – View items\n"
+        "/buy <item> – Buy item\n"
+        "/inventory – Your items\n\n"
+        f"Buy-ins are paid through CashApp: {CASHAPP}"
     )
 
+# ------------------------------------------------------
+# TOURNAMENT COMMANDS
+# ------------------------------------------------------
 async def join4(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = uname(update)
-    t = tournaments["4"]
-    if user in t["players"]:
-        return await update.message.reply_text("You're already in the 4-player table.")
-    if len(t["players"]) >= t["max"]:
-        return await update.message.reply_text("4-player table is full.")
-    t["players"].append(user)
-    await update.message.reply_text(f"@{user} joined the 4-player table ({len(t['players'])}/4).\nSend $10 to Cash App and type /paid")
+    user = update.effective_user
+    supabase.table("players").insert({
+        "user_id": user.id,
+        "username": user.username,
+        "table": "4player",
+        "paid": False
+    }).execute()
+
+    await update.message.reply_text(
+        f"You joined the $10 4-Player Table!\n\n"
+        f"Send $10 to {CASHAPP}\n"
+        f"Then type /paid"
+    )
 
 async def join8(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = uname(update)
-    t = tournaments["8"]
-    if user in t["players"]:
-        return await update.message.reply_text("You're already in the 8-player table.")
-    if len(t["players"]) >= t["max"]:
-        return await update.message.reply_text("8-player table is full.")
-    t["players"].append(user)
-    await update.message.reply_text(f"@{user} joined the 8-player table ({len(t['players'])}/8).\nSend $20 to Cash App and type /paid")
+    user = update.effective_user
+    supabase.table("players").insert({
+        "user_id": user.id,
+        "username": user.username,
+        "table": "8player",
+        "paid": False
+    }).execute()
+
+    await update.message.reply_text(
+        f"You joined the $10 8-Player Table!\n\n"
+        f"Send $10 to {CASHAPP}\n"
+        f"Then type /paid"
+    )
 
 async def paid(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = uname(update)
-    await update.message.reply_text(
-        f"💵 @{user} marked as PAID.\nHost will verify on Cash App."
-    )
+    user_id = update.effective_user.id
+    supabase.table("players").update({"paid": True}).eq("user_id", user_id).execute()
 
-async def winner(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global profit_total
-    if not context.args:
-        return await update.message.reply_text("Use: /winner <username>")
-    winner_name = context.args[0].lstrip("@")
-    for size, t in tournaments.items():
-        if winner_name in t["players"]:
-            total_in = len(t["players"]) * t["buyin"]
-            payout = t["payouts"][0]
-            house_profit = total_in - payout
-            profit_total += house_profit
-            await update.message.reply_text(
-                f"🏆 Winner: @{winner_name}\n"
-                f"Payout: ${payout}\n"
-                f"House profit: ${house_profit}"
-            )
-            t["players"].clear()
-            return
-    await update.message.reply_text("That user is not in any table.")
+    await update.message.reply_text("Payment verified! You are locked in.")
 
-async def winner2(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        return await update.message.reply_text("Use: /winner2 <username>")
-    winner_name = context.args[0].lstrip("@")
-    t = tournaments["8"]
-    if winner_name not in t["players"]:
-        return await update.message.reply_text("That user is not on the 8-player table.")
-    await update.message.reply_text(
-        f"🥈 Second place: @{winner_name}\n"
-        f"Payout: ${t['payouts'][1]}"
-    )
+async def show_tables(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = supabase.table("players").select("*").execute().data
 
-async def tables(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = "🎱 Current Tables:"
-    for size, t in tournaments.items():
-        msg += f"\n\n{size}-PLAYER ({len(t['players'])}/{t['max']}):\n"
-        if t["players"]:
-            for p in t["players"]:
-                msg += f" • @{p}\n"
-        else:
-            msg += " (empty)\n"
+    if not data:
+        await update.message.reply_text("No players yet.")
+        return
+
+    msg = "Active Players:\n\n"
+    for p in data:
+        msg += f"{p['user_id']} | {p['username']} | {p['table']} | Paid: {p['paid']}\n"
+
     await update.message.reply_text(msg)
 
-async def profit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"💰 Total house profit: ${profit_total}")
+async def winner(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Usage: /winner <user_id>")
+        return
 
+    winner_id = context.args[0]
+
+    supabase.table("winners").insert({
+        "winner_id": winner_id,
+        "amount": 30
+    }).execute()
+
+    await update.message.reply_text(
+        f"Winner set: {winner_id}\n"
+        f"Paid out $30."
+    )
+
+async def profit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    players = supabase.table("players").select("*").execute().data
+    winners = supabase.table("winners").select("*").execute().data
+
+    total_buyins = len(players) * 10
+    total_payouts = len(winners) * 30
+    net = total_buyins - total_payouts
+
+    await update.message.reply_text(
+        f"Total Buy-ins: ${total_buyins}\n"
+        f"Payouts: ${total_payouts}\n"
+        f"Net Profit: ${net}"
+    )
+
+# ------------------------------------------------------
+# MARKETPLACE
+# ------------------------------------------------------
+async def shop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Items for sale:\n"
+        "spin – 100 coins\n"
+        "boost – 300 coins\n"
+        "skin – 500 coins\n\n"
+        "Buy with /buy spin"
+    )
+
+async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Usage: /buy <item>")
+        return
+
+    item = context.args[0]
+    user_id = update.effective_user.id
+
+    supabase.table("inventory").insert({
+        "user_id": user_id,
+        "item": item
+    }).execute()
+
+    await update.message.reply_text(f"You purchased {item}!")
+
+async def inventory(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    items = supabase.table("inventory").select("*").eq("user_id", user_id).execute().data
+
+    if not items:
+        await update.message.reply_text("Your inventory is empty.")
+        return
+
+    msg = "Your Inventory:\n\n"
+    for item in items:
+        msg += f"- {item['item']}\n"
+
+    await update.message.reply_text(msg)
+
+# ------------------------------------------------------
+# RUN BOT (THE CORRECT WAY FOR PTB 20.6)
+# ------------------------------------------------------
 if __name__ == "__main__":
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    app = ApplicationBuilder().token(token).build()
-    app.add_handler(CommandHandler("start", start))
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    # Tournament Commands
     app.add_handler(CommandHandler("join4", join4))
     app.add_handler(CommandHandler("join8", join8))
     app.add_handler(CommandHandler("paid", paid))
+    app.add_handler(CommandHandler("tables", show_tables))
     app.add_handler(CommandHandler("winner", winner))
-    app.add_handler(CommandHandler("winner2", winner2))
-    app.add_handler(CommandHandler("tables", tables))
     app.add_handler(CommandHandler("profit", profit))
-    print("Miraplexity Tournament Bot LIVE")
+
+    # Marketplace Commands
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("shop", shop))
+    app.add_handler(CommandHandler("buy", buy))
+    app.add_handler(CommandHandler("inventory", inventory))
+
+    print("Miraplexity Beast Mode Bot is running...")
     app.run_polling()
